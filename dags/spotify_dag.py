@@ -11,11 +11,6 @@ except Exception as e:
     print("Error  {} ".format(e))
 
 
-def first(*args, **kwargs):
-    variable = kwargs.get("name", "Variable not found")
-    print(f"Hello world {variable}")
-
-    return "Hello World" + variable
 
 
 with DAG(
