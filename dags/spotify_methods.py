@@ -38,24 +38,26 @@ def check_if_valid_data(df: pd.DataFrame) -> bool:
 
 def spotify_etl():
     # Extract part of the ETL process
-    database_location = "sqlite:///my_played_tracks.sqlite"
+    database_location = "postgresql://airflow:airflow@localhost:8080/airflow"
     user_id = "bcfddd386ab24c9195e1b515585af30a"  # your Spotify username
-    token = "c29f6af97bc34b0182cf944bbeabe1e4"  # your Spotify API token
+    token = "BQCWiVV3LKJsfEuIQXNkg136EndK3pR4-ish_Rb9nMDlp85p386uec3Y65zCimsHY3sxnF0KfEbZSzlCKcxIzhnoNSjs_e7DlsLEq_9K_KjSDJS1QPg"  # your Spotify API token
 
     headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Authorization": "Bearer {token}".format(token=token)
+        #"Accept": "application/json",
+        #"Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
     }
-
     # Convert time to Unix timestamp in miliseconds
     today = datetime.datetime.now()
     start_date = today - datetime.timedelta(days=30)
     yesterday_unix_timestamp = int(start_date.timestamp()) * 1000
 
     # Download all songs you've listened to "after yesterday", which means in the last 24 hours
+    #r = requests.get(
+    #    "https://api.spotify.com/v1/me/player/recently-played?after={time}".format(time=yesterday_unix_timestamp),
+    #    headers=headers)
     r = requests.get(
-        "https://api.spotify.com/v1/me/player/recently-played?after={time}".format(time=yesterday_unix_timestamp),
+        "https://api.spotify.com/v1/me/player/recently-played",
         headers=headers)
 
     data = r.json()
@@ -66,12 +68,15 @@ def spotify_etl():
     timestamps = []
 
     # Extracting only the relevant bits of data from the json object
-    for song in data["items"]:
-        song_names.append(song["track"]["name"])
-        artist_names.append(song["track"]["album"]["artists"][0]["name"])
-        played_at_list.append(song["played_at"])
-        timestamps.append(song["played_at"][0:10])
-
+    try:
+        for song in data["items"]:
+            song_names.append(song["track"]["name"])
+            artist_names.append(song["track"]["album"]["artists"][0]["name"])
+            played_at_list.append(song["played_at"])
+            timestamps.append(song["played_at"][0:10])
+    except KeyError as e:
+        print(headers)
+        print(f'Items not found because data is {data}')
     # Prepare a dictionary in order to turn it into a pandas dataframe below
     song_dict = {
         "song_name": song_names,
@@ -88,7 +93,7 @@ def spotify_etl():
 
     # Load
     engine = sqlalchemy.create_engine(database_location)
-    conn = sqlite3.connect('my_played_tracks.sqlite')
+    conn = engine.connect()
     cursor = conn.cursor()
 
     sql_query = """
@@ -110,4 +115,3 @@ def spotify_etl():
         print("Data already exists in the database")
 
     conn.close()
-
