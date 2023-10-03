@@ -1,11 +1,14 @@
 try:
-
-    from datetime import timedelta
+    import os
+    import sys
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(current_dir)
+    sys.path.insert(0, parent_dir)
+    from datetime import timedelta, datetime
     from airflow import DAG
-    from airflow.operators.python_operator import PythonOperator
-    from datetime import datetime
-    import pandas as pd
     from spotify_methods import spotify_etl
+    from airflow.operators.python import PythonOperator
+    import pandas as pd
     print("All Dag modules are ok ......")
 except Exception as e:
     print("Error  {} ".format(e))
@@ -20,11 +23,11 @@ with DAG(
             "owner": "airflow",
             "retries": 1,
             "retry_delay": timedelta(minutes=5),
-            "start_date": datetime(2023, 9, 25),
+            "start_date": datetime(2023, 9, 25)
         }) as f:
     run_etl = PythonOperator(
         task_id="ETL_Spotify",
-        python_callable=spotify_etl(),
+        python_callable=spotify_etl,
         op_kwargs={"name": "Morales"}
     )
 
