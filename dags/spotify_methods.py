@@ -10,12 +10,12 @@ import base64
 from urllib.parse import urlencode, urlparse, parse_qs
 
 
-CLIENT_ID = "**52e"
-CLIENT_SECRET = "**d9f"
+CLIENT_ID = "**2e"
+CLIENT_SECRET = "**9f"
 REDIRECT_URI = "http://localhost:8888/callback"
 DATABASE_LOCATION = "postgresql://airflow:airflow@a39e18f45b63:5432/airflowspotify-postgres-1"
 
-
+#connection_string = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 def check_if_valid_data(df: pd.DataFrame) -> bool:
     # Check if dataframe is empty
     if df.empty:
@@ -46,13 +46,15 @@ def check_if_valid_data(df: pd.DataFrame) -> bool:
 
 def request_token():
     # Check if a file containing the refresh token exists
-    if open('refresh_token.txt', "r"):
-        f = open('refresh_token.txt', "r")
+    if open('../refresh_token.txt', "r"):
+        f = open('../refresh_token.txt', "r")
         refresh_token = f.readline()
-        print(f'Regresh token read from file {refresh_token}')
+        print(f'Refresh token read from file {refresh_token}')
     else:
-        print('No file refresh_token.txt found')
-        return -1
+        print('No file refresh_token.txt found, please run \'request_spotify_refresh_token\' first.')
+        response = requests.models.Response()
+        response.status_code = -1
+        return response
 
     # Request the token using the refresh token instead of authentication code
     token_url = 'https://accounts.spotify.com/api/token'
@@ -63,17 +65,17 @@ def request_token():
     headers = {
         'Authorization': 'Basic ' + base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
     }
-    response = requests.post(token_url, headers=headers, data=data).json()
-    if response:
-        token = response.get('access_token')
+    response = requests.post(token_url, headers=headers, data=data)
+    if response.status_code == 200:
+        token = response.json().get('access_token')
     else:
-        print(f'Token could not be taken due to error code: {response.get("error_code")}')
-        return -1
+        print(f'Token could not be taken due to error code: {response.status_code}')
+        return response
 
     # Using the token now request the wanted data
     response = requests.get('https://api.spotify.com/v1/me/player/recently-played', headers={'Authorization':
                                                                                                 f'Bearer {token}'})
-    return response.json()
+    return response
 
 
 def request_spotify_refresh_token():
@@ -90,11 +92,11 @@ def request_spotify_refresh_token():
         'redirect_uri': REDIRECT_URI}
     auth_url = f"{auth_url}{urlencode(data)}"
 
-    print(f'You need to open this {auth_url} url in your browser, while you are logged on your spotify account, and get the url '
-          f'result')
+    print(f'You need to open this {auth_url} url in your browser, while you are logged on your spotify account,'
+          f' and get the url result')
     auth_answer = input("Insert the link that resulted in the URL:")
     auth_code = parse_qs((urlparse(auth_answer)).query)['code'][0]
-    print(f'Auth code: {auth_code}')
+    #print(f'Auth code: {auth_code}')
 
     token_url = 'https://accounts.spotify.com/api/token'
     data = {
@@ -106,37 +108,37 @@ def request_spotify_refresh_token():
         'Authorization': 'Basic ' + base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
     }
 
-    response = requests.post(token_url, data=data, headers=headers).json()
-
-    if response:
-        print('Successful request of the token..\n Proceeds in saving the refresh token in a refresh_token.txt file')
-        print(f'Response {response}')
-        with open('refresh_token.txt', "w+") as refresh_token_file:
-            refresh_token_file.write(response.get('refresh_token'))
+    respo = requests.post(token_url, data=data, headers=headers)
+    if respo.status_code == 200:
+        print('Successful request of the token..\nProceeds in saving the refresh token in a refresh_token.txt file!')
+        respo = respo.json()
+        with open('../refresh_token.txt', "w+") as refresh_token_file:
+            refresh_token_file.write(respo.get('refresh_token'))
         print('Save is done\nTrying out if the refresh token works')
         response_test = request_token()
-        if response_test:
+        if response_test.status_code == 200:
             print('The new refresh token works')
         else:
-            print(f'The new refresh token doesn\'t work with error code: {response}')
+            print(f'The new refresh token doesn\'t work with error code: {response_test.status_code}. Please check the'
+                  f'credentials and try again')
     else:
-        print(f"The token request failed with status code:{response.get('status_code')}")
+        print(f"The token request failed with status code:{respo.status_code}")
 
 
 def spotify_etl():
     # Request data from Spotify API
+    print('ZERO STAGE')
     data = request_token()
-    if data == -1:
-        print('Reconfiguring the tokens')
+    if data.status_code != 200:
+        print(f'Reconfiguring the tokens due to status error code:{data.status_code}')
         request_spotify_refresh_token()
         data = request_token()
     data = data.json()
-
     song_names = []
     artist_names = []
     played_at_list = []
     timestamps = []
-
+    print('FIRST STAGE')
     # Extracting only the relevant bits of data from the json object
     try:
         for song in data["items"]:
@@ -147,24 +149,25 @@ def spotify_etl():
     except KeyError as e:
         print(f'Items not found because data is {data}')
     # Prepare a dictionary in order to turn it into a pandas dataframe below
+    print('SECOND STAGE')
     song_dict = {
         "song_name": song_names,
         "artist_name": artist_names,
         "played_at": played_at_list,
         "timestamp": timestamps
     }
-
+    print(f'Song dict test print {song_dict}')
     song_df = pd.DataFrame(song_dict, columns=["song_name", "artist_name", "played_at", "timestamp"])
 
     # Validate
     if check_if_valid_data(song_df):
         print("Data valid, proceed to Load stage")
-
+    print('THIRD STAGE')
     # Load
     engine = sqlalchemy.create_engine(DATABASE_LOCATION)
     conn = engine.connect()
     cursor = conn.cursor()
-
+    print('FOURTH STAGE')
     sql_query = """
         CREATE TABLE IF NOT EXISTS played_tracks(
             id SERIAL PRIMARY KEY,
@@ -188,5 +191,6 @@ def spotify_etl():
 
 if __name__ == '__main__':
     #request_spotify_refresh_token()
-    #print(request_token())
-    print('dummy print')
+    #response = request_token()
+    #print('dummy print')
+    spotify_etl()
