@@ -1,19 +1,21 @@
 import sqlalchemy
-import pandas as pd
 from sqlalchemy.orm import sessionmaker
+import pandas as pd
 import requests
 import json
 from datetime import datetime
 import datetime
 import sqlite3
 import base64
+import os
 from urllib.parse import urlencode, urlparse, parse_qs
 
 
-CLIENT_ID = "**2e"
-CLIENT_SECRET = "**9f"
+CLIENT_ID = "e0**"
+CLIENT_SECRET = "e5**"
 REDIRECT_URI = "http://localhost:8888/callback"
-DATABASE_LOCATION = "postgresql://airflow:airflow@a39e18f45b63:5432/airflowspotify-postgres-1"
+REFRESH_TOKEN = "AQ**"
+DATABASE_LOCATION = "postgresql://airflow:airflow@a39e18f45b63:5432/airflow"
 
 #connection_string = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 def check_if_valid_data(df: pd.DataFrame) -> bool:
@@ -32,29 +34,32 @@ def check_if_valid_data(df: pd.DataFrame) -> bool:
     if df.isnull().values.any():
         raise Exception("Null values found")
 
-    # Check that all timestamps are of yesterday's date
+    '''# Check that all timestamps are of yesterday's date
     yesterday = datetime.datetime.now() - datetime.timedelta(days=1)
     yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
 
     timestamps = df["timestamp"].tolist()
     for timestamp in timestamps:
         if datetime.datetime.strptime(timestamp, '%Y-%m-%d') != yesterday:
-            raise Exception("At least one of the returned songs does not have a yesterday's timestamp")
+            raise Exception("At least one of the returned songs does not have a yesterday's timestamp")'''
 
     return True
 
 
-def request_token():
+def request_token_without_authentication(refresh_token=None):
     # Check if a file containing the refresh token exists
-    if open('../refresh_token.txt', "r"):
+    '''if os.path.isfile('../refresh_token.txt'):
         f = open('../refresh_token.txt', "r")
         refresh_token = f.readline()
         print(f'Refresh token read from file {refresh_token}')
     else:
         print('No file refresh_token.txt found, please run \'request_spotify_refresh_token\' first.')
+        print(f"Current dir {os.listdir('.')} \n Previous dir {os.listdir('..')}")
         response = requests.models.Response()
         response.status_code = -1
-        return response
+        return response'''
+    if refresh_token is None:
+        refresh_token = REFRESH_TOKEN
 
     # Request the token using the refresh token instead of authentication code
     token_url = 'https://accounts.spotify.com/api/token'
@@ -78,7 +83,7 @@ def request_token():
     return response
 
 
-def request_spotify_refresh_token():
+def request_token_with_authentication():
     print(f'This methods require from the user to open a link and paste it in the runtime terminal, in order to '
           f'proceed to the request of the refresh token')
 
@@ -110,12 +115,15 @@ def request_spotify_refresh_token():
 
     respo = requests.post(token_url, data=data, headers=headers)
     if respo.status_code == 200:
-        print('Successful request of the token..\nProceeds in saving the refresh token in a refresh_token.txt file!')
+        #print('Successful request of the token..\nProceeds in saving the refresh token in a refresh_token.txt file!')
         respo = respo.json()
-        with open('../refresh_token.txt', "w+") as refresh_token_file:
-            refresh_token_file.write(respo.get('refresh_token'))
-        print('Save is done\nTrying out if the refresh token works')
-        response_test = request_token()
+        refresh_token = respo.get('refresh_token')
+        print(f'Successful request of the token..\nPlease insert it in the constant variables and run the Airflow DAG \n{refresh_token}')
+        #with open('../refresh_token.txt', "w+") as refresh_token_file:
+        #    refresh_token_file.write(respo.get('refresh_token'))
+        #print('Save is done\nTrying out if the refresh token works')
+        print('Trying out if the refresh token works')
+        response_test = request_token_without_authentication(refresh_token=refresh_token)
         if response_test.status_code == 200:
             print('The new refresh token works')
         else:
@@ -128,11 +136,11 @@ def request_spotify_refresh_token():
 def spotify_etl():
     # Request data from Spotify API
     print('ZERO STAGE')
-    data = request_token()
+    data = request_token_without_authentication()
     if data.status_code != 200:
-        print(f'Reconfiguring the tokens due to status error code:{data.status_code}')
-        request_spotify_refresh_token()
-        data = request_token()
+        print('No file refresh_token.txt found, please run \'request_spotify_with_authentication\' first locally.')
+        return -1
+
     data = data.json()
     song_names = []
     artist_names = []
@@ -165,8 +173,8 @@ def spotify_etl():
     print('THIRD STAGE')
     # Load
     engine = sqlalchemy.create_engine(DATABASE_LOCATION)
-    conn = engine.connect()
-    cursor = conn.cursor()
+    Session = sessionmaker(bind=engine)
+    session = Session()
     print('FOURTH STAGE')
     sql_query = """
         CREATE TABLE IF NOT EXISTS played_tracks(
@@ -174,23 +182,33 @@ def spotify_etl():
             song_name VARCHAR(200),
             artist_name VARCHAR(200),
             played_at VARCHAR(200),
-            timestamp VARCHAR(200),
+            timestamp VARCHAR(200)
         )
         """
 
-    cursor.execute(sql_query)
+    session.execute(sql_query)
     print("Opened database successfully")
+
+    # Use a raw SQL query to list databases
+    result = session.execute("SELECT datname FROM pg_database;")
+
+    q = f"SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+    result = session.execute(q)
+    # Retrieve and print the database names
+    for row in result:
+        print(row[0])
 
     try:
         song_df.to_sql("my_played_tracks", engine, index=False, if_exists='append')
     except:
         print("Data already exists in the database")
 
-    conn.close()
+    session.commit()
+    session.close()
 
 
 if __name__ == '__main__':
-    #request_spotify_refresh_token()
+    request_token_with_authentication()
     #response = request_token()
     #print('dummy print')
-    spotify_etl()
+    #spotify_etl()

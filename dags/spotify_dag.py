@@ -25,7 +25,6 @@ with DAG(
         }) as f:
     run_etl = PythonOperator(
         task_id="ETL_Spotify",
-        python_callable=spotify_etl,
-        op_kwargs={"name": "Morales"},
+        python_callable=spotify_etl
     )
 
