@@ -1,41 +1,35 @@
 try:
-
-    from datetime import timedelta
+    import os
+    import sys
+    from datetime import timedelta, datetime
     from airflow import DAG
+    from spotify_methods import fetch_data_and_create_tables, transform_and_load_data
     from airflow.operators.python_operator import PythonOperator
-    from datetime import datetime
     import pandas as pd
-
     print("All Dag modules are ok ......")
 except Exception as e:
     print("Error  {} ".format(e))
 
 
-
-
 with DAG(
-        dag_id="spotify_dag",
+        dag_id="spotify_etl_dag",
         schedule_interval="@daily",
         default_args={
             "owner": "airflow",
             "retries": 1,
             "retry_delay": timedelta(minutes=5),
-            "start_date": datetime(2023, 9, 25),
+            "start_date": datetime(2023, 10, 24)
         }) as f:
-    run_extract = PythonOperator(
-        task_id="extract_task",
-        python_callable=first,
-        op_kwargs={"name": "Morales"}
-    )
-    run_transform = PythonOperator(
-    task_id="run_transform",
-    python_callable=first,
-    op_kwargs={"name": "Morales"}
+    run_fetch = PythonOperator(
+        task_id="Fetch_and_create_tables",
+        provide_context=True,
+        python_callable=fetch_data_and_create_tables
     )
 
-run_extract >> run_transform
-# run_load = PythonOperator(
-#    task_id="first",
-#    python_callable=first,
-#    op_kwargs={"name": "Morales"}
-# )
+    transform_and_save = PythonOperator(
+        task_id="transform_and_load_data",
+        provide_context=True,
+        python_callable=transform_and_load_data
+    )
+
+    run_fetch >> transform_and_save
