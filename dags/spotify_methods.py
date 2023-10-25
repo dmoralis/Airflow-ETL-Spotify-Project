@@ -3,14 +3,12 @@ from sqlalchemy.orm import sessionmaker
 import pandas as pd
 import requests
 from collections import defaultdict
-import json
-from datetime import datetime
-import datetime
-import sqlite3
 import base64
-import os
 from urllib.parse import urlencode, urlparse, parse_qs
-
+from datetime import datetime, timedelta
+import os
+import json
+import sqlite3
 
 CLIENT_ID = "e0**"
 CLIENT_SECRET = "e5**"
@@ -18,18 +16,12 @@ REDIRECT_URI = "http://localhost:8888/callback"
 REFRESH_TOKEN = "AQ**"
 DATABASE_LOCATION = "postgresql://airflow:airflow@a39e18f45b63:5432/airflow"
 
-#connection_string = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+
 def check_if_valid_data(df: pd.DataFrame, ) -> bool:
     # Check if dataframe is empty
     if df.empty:
         print("No songs downloaded. Finishing execution")
         return False
-
-    # Primary Key Check
-    #if pd.Series(df['played_at']).is_unique:
-    #    pass
-    #else:
-    #    raise Exception("Primary Key check is violated")
 
     # Check for nulls
     if df.isnull().values.any():
@@ -38,23 +30,22 @@ def check_if_valid_data(df: pd.DataFrame, ) -> bool:
         print(df)
         raise Exception("Null values found")
 
-    '''# Check that all timestamps are of yesterday's date
-    yesterday = datetime.datetime.now() - datetime.timedelta(days=1)
-    yesterday = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    timestamps = df["timestamp"].tolist()
-    for timestamp in timestamps:
-        if datetime.datetime.strptime(timestamp, '%Y-%m-%d') != yesterday:
-            raise Exception("At least one of the returned songs does not have a yesterday's timestamp")'''
-
     return True
 
 
 def request_token_without_authentication(refresh_token=None, api_link='https://api.spotify.com/v1/me/'
-                                                                        'player/recently-played'):
+                                                                      'player/recently-played?', limit=0, before=0):
     # Check if a file containing the refresh token exists
     if refresh_token is None:
         refresh_token = REFRESH_TOKEN
+
+    if limit != 0:
+        api_link += f'limit={limit}'
+    if before != 0:
+        t = ''
+        if limit:
+            t = '&'
+        api_link += f'{t}before={before}'
 
     # Request the token using the refresh token instead of authentication code
     token_url = 'https://accounts.spotify.com/api/token'
@@ -110,7 +101,8 @@ def request_refresh_token_with_authentication():
     if respo.status_code == 200:
         respo = respo.json()
         refresh_token = respo.get('refresh_token')
-        print(f'Successful request of the token..\nPlease insert it in the constant variables and run the Airflow DAG \n{refresh_token}')
+        print(
+            f'Successful request of the token..\nPlease insert it in the constant variables and run the Airflow DAG \n{refresh_token}')
         print('Trying out if the refresh token works')
         response_test = request_token_without_authentication(refresh_token=refresh_token)
         if response_test.status_code == 200:
@@ -122,29 +114,15 @@ def request_refresh_token_with_authentication():
         print(f"The token request failed with status code:{respo.status_code}")
 
 
-def fetch_data_and_create_tables(**kwargs):
-    ti = kwargs['ti']
-
-    # Request data from Spotify API
-    print('ZERO STAGE')
-    data = request_token_without_authentication()
-    if data.status_code != 200:
-        print('No file refresh_token.txt found, please run \'request_spotify_with_authentication\' first locally.')
-        return -1
-
-    data = data.json()
-
+def load_dfs(data):
     song_dict = defaultdict(list)
     artist_dict = defaultdict(list)
     streaming_dict = defaultdict(list)
-
-    print('FIRST STAGE')
-    # Create song dictionary w/ relevant infos
     try:
         for song in data["items"]:
             artist_id = song["track"]["artists"][0]["id"]
 
-            # Set listens info dictionary
+            # Set streaming info dictionary
             streaming_dict["track_id"].append(song["track"]["id"])
             streaming_dict["artist_id"].append(artist_id)
             streaming_dict["played_timestamp"].append(song["played_at"])
@@ -170,31 +148,58 @@ def fetch_data_and_create_tables(**kwargs):
     except KeyError as e:
         print(f'Items not found because data is {data} \n ERROR ON {e}')
 
-    print(f'Song dict test print {song_dict}')
     song_df = pd.DataFrame(song_dict, columns=["id", "song_name", "artist_name", "duration",
                                                "is_explicit", "is_in_album"])
     artist_df = pd.DataFrame(artist_dict, columns=["id", "followers", "genres", "popularity", "name"])
 
     streaming_df = pd.DataFrame(streaming_dict, columns=["track_id", "artist_id", "played_timestamp"])
+    return artist_df, song_df, streaming_df
 
-    # Validate
+
+def fetch_data_and_create_tables(**kwargs):
+    # Get kwargs
+    ti = kwargs['ti']
+
+    # Get yesterday date
+    yesterday_end_timestamp = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+    yesterday_start_timestamp = int((datetime.now() - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) \
+                               .timestamp() * 1000)
+
+    # Initialize dataframes
+    artist_df, song_df, streaming_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+    # Loop until we reach 2 days before
+    before_date = yesterday_end_timestamp
+    while True:
+        # Request data from Spotify API
+        data = request_token_without_authentication(before=before_date, limit=50)
+        if data.status_code != 200:
+            print('No file refresh_token.txt found, please run \'request_spotify_with_authentication\' first locally.')
+            return -1
+        data = data.json()
+
+        # Load and append data
+        df1, df2, df3 = load_dfs(data)
+        artist_df = artist_df.append(df1, ignore_index=True)
+        song_df = song_df.append(df2, ignore_index=True)
+        streaming_df = streaming_df.append(df3, ignore_index=True)
+
+        # Load previous data only if it exists or if there are wanted timestamps
+        if data['cursors'] is None or int(data['cursors']['before']) < yesterday_start_timestamp:
+            break
+        before_date = data['cursors']['before']
+
+    # Validate dfs
     if check_if_valid_data(song_df):
         print("Songs Data valid, proceed to Load stage")
-
     if check_if_valid_data(artist_df):
         print("Artists Data valid, proceed to Load stage")
 
-    print('THIRD STAGE')
-    # Load
+    # Create DB tables if they don't exist
     engine = sqlalchemy.create_engine(DATABASE_LOCATION)
     Session = sessionmaker(bind=engine)
     session = Session()
-    print('FOURTH STAGE')
     sql_query_create_tables = """
-        DROP TABLE IF EXISTS played_tracks;
-        DROP TABLE IF EXISTS streaming;
-        DROP TABLE IF EXISTS artists;
-        
         CREATE TABLE IF NOT EXISTS played_tracks(
             id VARCHAR(200) PRIMARY KEY,
             song_name VARCHAR(200),
@@ -207,6 +212,7 @@ def fetch_data_and_create_tables(**kwargs):
         CREATE TABLE IF NOT EXISTS streaming(
             track_id VARCHAR(200),
             artist_id  VARCHAR(200),
+            date DATE,
             played_timestamp timestamp,
             ingestion_date timestamp DEFAULT current_timestamp,
             PRIMARY KEY (track_id, artist_id, played_timestamp)
@@ -223,21 +229,14 @@ def fetch_data_and_create_tables(**kwargs):
     session.execute(sql_query_create_tables)
     print("Opened database successfully")
 
-    # Use a raw SQL query to list databases
-    result = session.execute("SELECT datname FROM pg_database;")
-
+    # Print all tables of the DB
     q = f"SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
     result = session.execute(q)
     # Retrieve and print the database names
     for row in result:
         print(row[0])
 
-    try:
-        song_df.to_sql("my_played_tracks", engine, index=False, if_exists='append')
-    except:
-        print("Data already exists in the database")
-
-    # pushes data in any_serializable_value into xcom with key "identifier as string"
+    # pushes data in any_serializable_value into xcom with keys
     ti.xcom_push(key="song_df", value=song_df)
     ti.xcom_push(key="artist_df", value=artist_df)
     ti.xcom_push(key="streaming_df", value=streaming_df)
@@ -245,18 +244,26 @@ def fetch_data_and_create_tables(**kwargs):
     session.commit()
     session.close()
 
-def transform_and_load_data(**kwargs):
-    ti = kwargs['ti']
 
+def transform_and_load_data(**kwargs):
+    # Load dfs from previous DAG method
+    ti = kwargs['ti']
     song_df = ti.xcom_pull(key="song_df")
     artist_df = ti.xcom_pull(key="artist_df")
     streaming_df = ti.xcom_pull(key="streaming_df")
-    print(f'Song df {song_df} \n\n artist df {artist_df} \n\n streaming df {streaming_df}')
 
+    # Connect to DB
     engine = sqlalchemy.create_engine(DATABASE_LOCATION)
     Session = sessionmaker(bind=engine)
     session = Session()
 
+    # Keep the rows that have the same date as yesterday
+    streaming_df['played_timestamp'] = pd.to_datetime(streaming_df['played_timestamp'])
+    streaming_df['date'] = streaming_df['played_timestamp'].dt.date
+    yesterday = (datetime.today() - timedelta(days=1)).date()
+    streaming_df = streaming_df[streaming_df['date'] == yesterday]
+
+    # Load data in the Database (do not replace if a row already exists)
     for index, row in song_df.iterrows():
         session.execute(f"INSERT INTO played_tracks(id, song_name, artist_name, duration, is_explicit, is_in_album) "
                         f"VALUES ('{row['id']}', '{row['song_name']}', '{row['artist_name']}', {row['duration']}, "
@@ -264,8 +271,12 @@ def transform_and_load_data(**kwargs):
                         f"ON CONFLICT (id) DO NOTHING")
 
     for index, row in artist_df.iterrows():
+        if len(row['genres']):
+            genres_value = f"ARRAY{row['genres']}"
+        else:
+            genres_value = "NULL"
         session.execute(f"INSERT INTO artists(id, name, followers, genres, popularity) "
-                        f"VALUES('{row['id']}', '{row['name']}', {row['followers']}, ARRAY{row['genres']},"
+                        f"VALUES('{row['id']}', '{row['name']}', {row['followers']}, {genres_value},"
                         f" {row['popularity']}) ON CONFLICT (id) DO NOTHING")
 
     for index, row in streaming_df.iterrows():
@@ -273,8 +284,7 @@ def transform_and_load_data(**kwargs):
                         f"VALUES('{row['track_id']}', '{row['artist_id']}', '{row['played_timestamp']}') "
                         f"ON CONFLICT (track_id, artist_id, played_timestamp) DO NOTHING")
 
-
-
+    # Print tables after the update for test purposes
     print('Data were loaded in the tables')
     for temp in session.execute(f"SELECT * FROM artists;"):
         print(temp)
@@ -287,9 +297,6 @@ def transform_and_load_data(**kwargs):
     for temp in session.execute(f"SELECT * FROM streaming;"):
         print(temp)
 
+# Run this after assigning the CLIENT_ID and SECRET_ID constants in order to get a refresh token
 if __name__ == '__main__':
-    print('dummy')
-    #request_refresh_token_with_authentication()
-    #response = request_token()
-    #print('dummy print')
-    #spotify_etl()
+    request_refresh_token_with_authentication()

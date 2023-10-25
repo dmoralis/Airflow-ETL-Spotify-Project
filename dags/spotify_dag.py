@@ -1,9 +1,6 @@
 try:
     import os
     import sys
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(current_dir)
-    sys.path.insert(0, parent_dir)
     from datetime import timedelta, datetime
     from airflow import DAG
     from spotify_methods import fetch_data_and_create_tables, transform_and_load_data
@@ -21,7 +18,7 @@ with DAG(
             "owner": "airflow",
             "retries": 1,
             "retry_delay": timedelta(minutes=5),
-            "start_date": datetime(2023, 10, 23)
+            "start_date": datetime(2023, 10, 24)
         }) as f:
     run_fetch = PythonOperator(
         task_id="Fetch_and_create_tables",
